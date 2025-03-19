@@ -68,10 +68,10 @@ class Nav2Explorer(Node):
     # -------------------------------------------------------------------------
     def image_callback(self, msg):
         if self.state == 'STOPPED':
-            return  # Do nothing if the robot has stopped
+            return  
 
         try:
-            # Convert ROS Image message to OpenCV format
+           
             cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
 
             # Convert image to HSV for color detection
@@ -80,7 +80,7 @@ class Nav2Explorer(Node):
             # Sensitivity for color detection
             sensitivity = 10
 
-            # Define HSV ranges for green, red, and blue
+            # Define HSV ranges
             hsv_green_lower = np.array([60 - sensitivity, 100, 100])
             hsv_green_upper = np.array([60 + sensitivity, 255, 255])
 
@@ -92,21 +92,21 @@ class Nav2Explorer(Node):
             hsv_blue_lower = np.array([110 - sensitivity, 100, 100])
             hsv_blue_upper = np.array([110 + sensitivity, 255, 255])
 
-            # Create masks for each color
+            # Masks for seperate colors
             green_mask = cv2.inRange(hsv_image, hsv_green_lower, hsv_green_upper)
             red_mask1 = cv2.inRange(hsv_image, hsv_red_lower1, hsv_red_upper1)
             red_mask2 = cv2.inRange(hsv_image, hsv_red_lower2, hsv_red_upper2)
             red_mask = cv2.bitwise_or(red_mask1, red_mask2)
             blue_mask = cv2.inRange(hsv_image, hsv_blue_lower, hsv_blue_upper)
 
-            # Combine masks for green, red, and blue
+            # Combine masks 
             combined_mask = cv2.bitwise_or(green_mask, red_mask)
             combined_mask = cv2.bitwise_or(combined_mask, blue_mask)
 
-            # Apply the combined mask to the image to filter out unwanted colors
+            # Filter irrelevant colors
             filtered_img = cv2.bitwise_and(cv_image, cv_image, mask=combined_mask)
 
-            # Display the filtered image in the OpenCV window
+            # Display the live camera feed
             cv2.imshow('camera_Feed', cv_image)
             cv2.waitKey(3)
 
@@ -157,7 +157,7 @@ class Nav2Explorer(Node):
 
     def scan_callback(self, msg):
         if self.state == 'STOPPED':
-            return  # Ignore scans if the robot has stopped
+            return  
 
         # Calculate the distance ahead using LIDAR data
         ranges = np.array(msg.ranges)
@@ -167,12 +167,9 @@ class Nav2Explorer(Node):
         valid = [r for r in front_ranges if 0.2 < r < 25.0]
         self.distance_ahead = sum(valid) / len(valid) if valid else None
 
-    # -------------------------------------------------------------------------
-    # Main Control Loop
-    # -------------------------------------------------------------------------
     def control_loop(self):
         if self.state == 'STOPPED':
-            return  # Do nothing if the robot has stopped
+            return  
 
         # State Machine Logic
         if self.state == 'GO_TO_POINT':
@@ -184,9 +181,6 @@ class Nav2Explorer(Node):
         else:
             self.get_logger().warn(f"Unknown state: {self.state}")
 
-    # -------------------------------------------------------------------------
-    # State Functions
-    # -------------------------------------------------------------------------
     def go_to_next_point(self):
         if self.current_target_index >= len(self.target_positions):
             self.get_logger().info("All target positions visited. Stopping.")
@@ -198,7 +192,7 @@ class Nav2Explorer(Node):
         self.get_logger().info(f"[GO_TO_POINT] Going to position {self.current_target_index + 1}: {target}")
         self.send_nav2_goal(target[0], target[1], target[2])
         self.state = 'GO_TO_POINT'
-
+        # 360° spin to look around the room once reached one of the three positions
     def look_around(self):
         if self.spin_start_time is None:
             self.spin_start_time = time.time()
@@ -239,52 +233,57 @@ class Nav2Explorer(Node):
             self.get_logger().info(f"[APPROACH_BOX] Driving. offset={self.x_offset:.1f}")
 
         self.cmd_vel_pub.publish(twist)
-
-    # -------------------------------------------------------------------------
-    # Nav2 Action Functions
-    # -------------------------------------------------------------------------
+    # Nav2 goal action function
     def send_nav2_goal(self, x, y, yaw):
+        # Create a new goal message for the Nav2 action server
         goal_msg = NavigateToPose.Goal()
-        goal_msg.pose.header.frame_id = 'map'
+        goal_msg.pose.header.frame_id = 'map' # The goal is in the map frame
         goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
-
+        # Set the target position (x, y) and orientation (yaw) for the goal
         goal_msg.pose.pose.position.x = x
         goal_msg.pose.pose.position.y = y
         goal_msg.pose.pose.orientation.z = math.sin(yaw / 2)
         goal_msg.pose.pose.orientation.w = math.cos(yaw / 2)
 
         self.action_client.wait_for_server()
+         # Send the goal asynchronously and set up feedback and response callbacks
         self.send_goal_future = self.action_client.send_goal_async(
             goal_msg, feedback_callback=self.feedback_callback
         )
         self.send_goal_future.add_done_callback(self.goal_response_callback)
 
     def goal_response_callback(self, future):
+        # Handle the response from the Nav2 action server after sending the goal
         goal_handle = future.result()
         if not goal_handle.accepted:
+            # If the goal was rejected, log the rejection and stay in the GO_TO_POINT state
             self.get_logger().info("[GO_TO_POINT] Goal was rejected => GO_TO_POINT")
             self.state = 'GO_TO_POINT'
             return
-
+        # If the goal was rejected, log the rejection and stay in the GO_TO_POINT state
         self.get_logger().info("[GO_TO_POINT] Goal accepted.")
         self.current_goal_handle = goal_handle
 
+        # Callback to handle the result when the goal is completed
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
+        # Handle the result of the Nav2 action (success or failure)
         status = future.result().status
         self.current_goal_handle = None
 
-        if status == 4:  # SUCCESS
-            self.get_logger().info("[GO_TO_POINT] Nav2 success => LOOK_AROUND")
+        if status == 4:  # Success now look around
+            self.get_logger().info("[GO_TO_POINT] Nav2 success now LOOK_AROUND")
             self.state = 'LOOK_AROUND'
             self.spin_start_time = None
         else:
+            # If the goal failed, log the failure and stay in the GO_TO_POINT state
             self.get_logger().warn(f"[GO_TO_POINT] Nav2 ended status={status} => GO_TO_POINT")
             self.state = 'GO_TO_POINT'
 
     def cancel_current_nav_goal(self):
+        # Cancel the current navigation goal and head towards the box
         if self.current_goal_handle is not None:
             self.get_logger().info("[GO_TO_POINT] Cancelling Nav2 goal => approach box")
             cancel_future = self.current_goal_handle.cancel_goal_async()
